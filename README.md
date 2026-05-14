@@ -10,8 +10,11 @@ It exists as a learning vehicle. The goal isn't to ship an OS; it's to internali
 
 ## Status
 
-Early. Stage 1 (boot + screen) done.
-Stage 2 (TBD...) in progress.
+Early.
+
+- Stage 1 (`kfs1`): boot + screen - done.
+- Stage 2 (`kfs2`): GDT + stack - goals defined.
+- Stage 3 (`kfs3`): memory - goals defined.
 
 ## Building
 
@@ -36,6 +39,8 @@ Use `make run-headless` when no graphical QEMU display is available.
 ## Documentation
 
 - [`docs/stage-1.md`](docs/stage-1.md) — stage 1 goals
+- [`docs/stage-2.md`](docs/stage-2.md) — stage 2 goals
+- [`docs/stage-3.md`](docs/stage-3.md) — stage 3 goals
 
 ## License
 
