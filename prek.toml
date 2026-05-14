@@ -1,0 +1,21 @@
+# `prek` configuration for zkrnl32
+# This leverages the fast Rust-native path for standard hooks and
+# uses system-level Rust tools for `fmt` and `clippy`.
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v5.0.0" # `prek` ignores this for the fast path, but it's good practice
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-added-large-files" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt -- --check", language = "system", types = ["rust"], pass_filenames = false },
+  { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy -- -D warnings", language = "system", types = ["rust"], pass_filenames = false }
+]
