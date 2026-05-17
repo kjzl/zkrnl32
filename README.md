@@ -13,8 +13,8 @@ It exists as a learning vehicle. The goal isn't to ship an OS; it's to internali
 Early.
 
 - Stage 1 (`kfs1`): boot + screen - done.
-- Stage 2 (`kfs2`): GDT + stack - goals defined.
-- Stage 3 (`kfs3`): memory - goals defined.
+- Stage 2 (`kfs2`): GDT + stack - done.
+- Stage 3 (`kfs3`): memory - in progress.
 
 ## Building
 
