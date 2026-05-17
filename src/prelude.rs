@@ -8,5 +8,5 @@
 // use core::marker::PhantomData; //
 // use core::ptr::NonNull; //
 
-/// A placeholder for the prelude module initialization.
-pub struct PreludeInit;
+pub use crate::printk;
+pub use crate::printk_color;

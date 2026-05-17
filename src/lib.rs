@@ -37,6 +37,7 @@
 pub mod console;
 pub mod gdt;
 pub mod prelude;
+pub mod stack;
 pub mod vga;
 pub mod volatile;
 
@@ -53,6 +54,8 @@ pub extern "C" fn kernel_main() -> ! {
     display.clear();
     display.write(b"Hello World!\n");
     printk_color!(Color::Black.on(Color::White), "42\n");
+
+    crate::dump_stack!(32);
 
     loop {
         core::hint::spin_loop();
