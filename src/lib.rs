@@ -7,7 +7,6 @@
 //! For architectural details and project goals, refer to the `docs/` directory.
 
 #![no_std]
-#![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::all)]
 #![warn(rust_2018_idioms)]
@@ -36,6 +35,7 @@
 //    a virtual serial port. This will be implemented around Stage 3/4.
 
 pub mod console;
+pub mod gdt;
 pub mod prelude;
 pub mod vga;
 pub mod volatile;

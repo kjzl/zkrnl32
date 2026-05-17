@@ -40,7 +40,9 @@ $(BUILD_DIR)/.dir:
 $(BOOT_OBJ): boot/boot.asm | $(BUILD_DIR)/.dir
 	nasm -f elf32 boot/boot.asm -o $(BOOT_OBJ)
 
-$(RUST_LIB): Cargo.toml Cargo.lock src/lib.rs src/prelude.rs $(TARGET)
+RUST_SRCS := $(shell find src -name '*.rs')
+
+$(RUST_LIB): Cargo.toml Cargo.lock $(RUST_SRCS) $(TARGET)
 	cargo +nightly build --target $(TARGET) -Zjson-target-spec -Zbuild-std=core,compiler_builtins -Zbuild-std-features=compiler-builtins-mem
 
 $(KERNEL): $(BOOT_OBJ) $(RUST_LIB) boot/linker.ld

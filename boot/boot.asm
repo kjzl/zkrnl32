@@ -58,6 +58,11 @@ _start:
 	; in assembly as languages such as C cannot function without a stack.
 	mov esp, stack_top
 
+	; Load the kernel-owned GDT and reload segment registers before entering
+	; Rust code that assumes our protected-mode segment layout is active.
+	extern install_gdt
+	call install_gdt
+
 	; This is a good place to initialize crucial processor state before the
 	; high-level kernel is entered. It's best to minimize the early
 	; environment where crucial features are offline. Note that the
