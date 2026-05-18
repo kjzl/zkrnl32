@@ -1,23 +1,30 @@
 TARGET := targets/i386-zkrnl32.json
 TARGET_NAME := i386-zkrnl32
 PROFILE := debug
+RUST_TOOLCHAIN ?= nightly-2026-04-24
 BUILD_DIR := build
 KERNEL := $(BUILD_DIR)/kernel.elf
 ISO := $(BUILD_DIR)/zkrnl32.iso
 ISO_ROOT := $(BUILD_DIR)/iso
 BOOT_OBJ := $(BUILD_DIR)/boot.o
 RUST_LIB := target/$(TARGET_NAME)/$(PROFILE)/libzkrnl32.a
-RUST_SYSROOT := $(shell rustc +nightly --print sysroot)
-RUST_LLD := $(RUST_SYSROOT)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
+RUST_SYSROOT = $(shell rustc +$(RUST_TOOLCHAIN) --print sysroot)
+RUST_LLD = $(RUST_SYSROOT)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
 QEMU := qemu-system-i386
 QEMU_FLAGS := -cdrom $(ISO)
 QEMU_HEADLESS_FLAGS := -cdrom $(ISO) -display none
 GRUB_BIOS_DIR := /usr/lib/grub/i386-pc
 
-.PHONY: all build iso run run-headless check check-iso-tools check-run-tools clean
+.PHONY: all build iso run run-headless check check-rust-toolchain check-iso-tools check-run-tools print-rust-toolchain clean
 
 # Default target
 all: build
+
+print-rust-toolchain:
+	@printf '%s\n' '$(RUST_TOOLCHAIN)'
+
+check-rust-toolchain:
+	@rustc +$(RUST_TOOLCHAIN) --version >/dev/null
 
 # Builds the bootable kernel ELF.
 build: $(KERNEL)
@@ -42,10 +49,10 @@ $(BOOT_OBJ): boot/boot.asm | $(BUILD_DIR)/.dir
 
 RUST_SRCS := $(shell find src -name '*.rs')
 
-$(RUST_LIB): Cargo.toml Cargo.lock $(RUST_SRCS) $(TARGET)
-	cargo +nightly build --target $(TARGET) -Zjson-target-spec -Zbuild-std=core,compiler_builtins -Zbuild-std-features=compiler-builtins-mem
+$(RUST_LIB): Cargo.toml Cargo.lock $(RUST_SRCS) $(TARGET) | check-rust-toolchain
+	cargo +$(RUST_TOOLCHAIN) build --target $(TARGET) -Zjson-target-spec -Zbuild-std=core,compiler_builtins -Zbuild-std-features=compiler-builtins-mem
 
-$(KERNEL): $(BOOT_OBJ) $(RUST_LIB) boot/linker.ld
+$(KERNEL): $(BOOT_OBJ) $(RUST_LIB) boot/linker.ld | check-rust-toolchain
 	$(RUST_LLD) -flavor gnu -m elf_i386 -T boot/linker.ld -o $(KERNEL) $(BOOT_OBJ) $(RUST_LIB)
 
 check-iso-tools:

@@ -2,9 +2,10 @@ name: CI Checks
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,15 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read Rust toolchain
+        run: echo "RUST_TOOLCHAIN=$(make print-rust-toolchain)" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Run prek
         uses: j178/prek-action@v2
         with:
-          extra-args: '--all-files'
+          extra-args: "--all-files"
 
   build:
     name: Build Kernel
@@ -32,8 +37,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Read Rust toolchain
+        run: echo "RUST_TOOLCHAIN=$(make print-rust-toolchain)" >> "$GITHUB_ENV"
 
-      - name: Build staticlib
-        run: cargo build
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm grub-common grub-pc-bin xorriso mtools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rust-src
+
+      - name: Build Kernel iso
+        run: make iso
+
+      - name: Upload ISO artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: zkrnl32-${{ github.sha }}.iso
+          path: build/zkrnl32.iso
+          if-no-files-found: error
+          compression-level: 0
+          archive: false
