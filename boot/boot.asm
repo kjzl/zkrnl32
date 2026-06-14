@@ -62,8 +62,24 @@ _start:
 	; in assembly as languages such as C cannot function without a stack.
 	mov esp, stack_top
 
+	; Secure GRUB's hand-off before anything else runs. GRUB left the Multiboot
+	; magic in eax and the info-struct pointer in ebx. eax is caller-saved, so
+	; the very next `call` is free to destroy it. Rather than depend on which
+	; registers install_gdt happens to preserve, push both values onto the stack
+	; now, where no called function can reach them. They double as kernel_main's
+	; C arguments (cdecl pushes right-to-left, so magic becomes arg1, info arg2).
+	; The leading `sub esp, 8` pads the 2-dword frame to 16 bytes so esp stays
+	; 16-byte aligned at *both* calls below, as the SysV i386 ABI requires.
+	sub esp, 8       ; alignment padding for the argument frame
+	push ebx         ; arg 2: multiboot info pointer
+	push eax         ; arg 1: multiboot magic
+
 	; Load the kernel-owned GDT and reload segment registers before entering
 	; Rust code that assumes our protected-mode segment layout is active.
+	; install_gdt is free to clobber any caller-saved register, but our hand-off
+	; is already safe on the stack — so we neither save registers around it nor
+	; clean up after it. It is stack-balanced (returns esp unchanged) and only
+	; touches its own frame and the GDT region, never our argument frame.
 	extern install_gdt
 	call install_gdt
 
@@ -76,13 +92,9 @@ _start:
 	; C++ features such as global constructors and exceptions will require
 	; runtime support to work as well.
 
-	; Enter the high-level kernel. The ABI requires the stack is 16-byte
-	; aligned at the time of the call instruction (which afterwards pushes
-	; the return pointer of size 4 bytes). The stack was originally 16-byte
-	; aligned above and we've since pushed a multiple of 16 bytes to the
-	; stack since (pushed 0 bytes so far) and the alignment is thus
-	; preserved and the call is well defined.
-        ; note, that if you are building on Windows, C functions may have "_" prefix in assembly: _kernel_main
+	; Enter the high-level kernel. kernel_main(magic, info)'s argument frame is
+	; already on the stack from above, and esp is still 16-byte aligned, so we
+	; call straight through — nothing to rebuild or realign here.
 	extern kernel_main
 	call kernel_main
 
