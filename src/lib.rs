@@ -10,7 +10,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::all)]
 #![warn(rust_2018_idioms)]
-
 // --- Nightly Features ---
 //
 // Document all required nightly feature flags here, including why they are needed.
@@ -36,8 +35,10 @@
 
 pub mod console;
 pub mod gdt;
+pub mod memory;
 pub mod prelude;
 pub mod stack;
+pub mod utils;
 pub mod vga;
 pub mod volatile;
 
