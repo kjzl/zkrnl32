@@ -43,6 +43,7 @@ pub mod vga;
 pub mod volatile;
 
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vga::Color;
 
@@ -63,16 +64,35 @@ pub extern "C" fn kernel_main() -> ! {
     }
 }
 
-/// The central panic handler for the kernel.
+/// The kernel's fatal-error path.
 ///
-/// This function is called whenever the kernel panics. It currently loops indefinitely.
-///
-/// # Safety
-///
-/// This function never returns.
+/// Prints the panic message and source location in a loud colour, then halts
+/// the processor for good. There is no unwinding (`panic = "abort"`), so every
+/// panic ends execution here. A re-entrancy guard keeps a fault *inside* this
+/// handler from recursing: on re-entry it skips printing and halts directly.
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+fn panic(info: &PanicInfo<'_>) -> ! {
+    // A panic while printing, e.g. a fault touching the VGA buffer, would
+    // re-enter this handler. `swap` lets only the first entrant print; later
+    // ones fall straight through to the halt, so a secondary fault can neither
+    // recurse forever nor scramble the screen. Relaxed suffices: the kernel is
+    // single-core and takes no interrupts.
+    static PANICKING: AtomicBool = AtomicBool::new(false);
+    if !PANICKING.swap(true, Ordering::Relaxed) {
+        printk_color!(Color::White.on(Color::Red), "\nKERNEL PANIC\n{info}\n");
+        // Dump a short window of the stack from this frame upward through the
+        // frames that led here. `dump_stack!` is bounds-checked, so a corrupt or
+        // overflowed stack degrades to a diagnostic line instead of a wild read.
+        // Kept short so the message above stays on the 25-row VGA screen; a
+        // serial mirror later lifts that limit.
+        crate::dump_stack!(16);
+    }
+
+    // Park the core: `hlt` stops it until an interrupt, and the loop re-halts if
+    // a non-maskable one wakes it. `cli` masks the maskable interrupts (none are
+    // enabled yet, but be explicit). Idles the CPU instead of the old hot spin.
     loop {
-        core::hint::spin_loop();
+        // SAFETY: `cli`/`hlt` touch only CPU interrupt state; sound to run here.
+        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
     }
 }
