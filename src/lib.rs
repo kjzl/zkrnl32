@@ -36,6 +36,7 @@
 pub mod console;
 pub mod gdt;
 pub mod memory;
+pub mod multiboot;
 pub mod prelude;
 pub mod stack;
 pub mod utils;
@@ -45,19 +46,40 @@ pub mod volatile;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::multiboot::{BOOTLOADER_MAGIC, MultibootInfo};
 use crate::vga::Color;
 
 /// Kernel entry point called by the assembly boot stub.
+///
+/// Receives the Multiboot hand-off the boot stub pushed: `magic` (from `eax`)
+/// proves a Multiboot-compliant loader, and `info` (from `ebx`) points at the
+/// structure GRUB built. The magic is checked before `info` is dereferenced.
+///
+/// # Safety
+///
+/// Must be called exactly once, by the boot stub, with the register state a
+/// Multiboot loader provides. When `magic` equals [`BOOTLOADER_MAGIC`], `info`
+/// must point at the valid Multiboot information structure GRUB built.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_main() -> ! {
-    #[expect(static_mut_refs)]
-    let display = unsafe { &mut vga::VGA_WRITER };
+pub unsafe extern "C" fn kernel_main(magic: u32, info: *const MultibootInfo) -> ! {
+    if magic != BOOTLOADER_MAGIC {
+        panic!("not booted by a multiboot loader: magic={magic:#x}");
+    }
+    // SAFETY: a matching boot magic means GRUB placed a valid information
+    // structure at `info`; it stays mapped and unmodified this early in boot,
+    // so a shared borrow for the duration of this call is sound.
+    let info = unsafe { &*info };
 
-    display.clear();
-    display.write(b"Hello World!\n");
-    printk_color!(Color::Black.on(Color::White), "42\n");
+    {
+        // SAFETY: single-core with interrupts disabled, and no other borrow of
+        // VGA_WRITER is live across this block.
+        #[expect(static_mut_refs)]
+        let display = unsafe { &mut vga::VGA_WRITER };
+        display.clear();
+    }
 
-    crate::dump_stack!(32);
+    printk!("zkrnl32 booting\n");
+    multiboot::print_memory_map(info);
 
     loop {
         core::hint::spin_loop();
