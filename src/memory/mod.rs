@@ -1,11 +1,14 @@
 //! Kernel memory management.
 //!
-//! Houses the physical [frame allocator](frame), the static kernel-image
-//! [layout](layout), and the [`init`] entry point the boot path calls to bring
-//! the subsystem online. Paging and the kernel heap will join here soon.
+//! Houses the typed [addresses](address), the physical [frame allocator](frame),
+//! the static kernel-image [layout](layout), and the [`init`] entry point the
+//! boot path calls to bring the subsystem online. Paging and the kernel heap
+//! will join here soon.
 
 use crate::multiboot::MultibootInfo;
 
+#[expect(dead_code)]
+pub mod address;
 #[expect(dead_code)]
 pub mod frame;
 pub mod layout;

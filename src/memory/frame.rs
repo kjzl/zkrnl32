@@ -13,6 +13,8 @@
 
 use core::num::NonZeroUsize;
 
+use crate::memory::address::FrameNumber;
+use crate::memory::address::PhysAddr;
 use crate::memory::layout::kernel_end_addr;
 use crate::memory::layout::kernel_start_addr;
 use crate::multiboot::MemoryMap;
@@ -39,14 +41,6 @@ const _: () = assert!(
 // TODO: wrap in an interrupt-safe lock once one exists and drop `static mut`.
 pub(super) static mut FRAME_ALLOCATOR: FrameBitmap = FrameBitmap::new();
 
-/// Zero-based index of a physical frame.
-///
-/// A plain coordinate carrying no ownership; allocator-issued [`FrameRun`]
-/// values represent ownership.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FrameNumber(usize);
-
 /// Owned, non-empty run of contiguous physical frames issued by the
 /// allocator.
 ///
@@ -67,7 +61,7 @@ impl FrameRun {
         debug_assert!(start < FRAME_COUNT);
         debug_assert!(len.get() <= FRAME_COUNT - start);
         Self {
-            start: FrameNumber(start),
+            start: FrameNumber::new(start),
             len,
         }
     }
@@ -87,7 +81,7 @@ impl FrameRun {
     /// Returns the exclusive end of the run as a raw frame index.
     #[inline(always)]
     pub const fn end_exclusive(&self) -> usize {
-        self.start.0 + self.len.get()
+        self.start.index() + self.len.get()
     }
 }
 
@@ -119,9 +113,9 @@ impl FrameBitmap {
                 continue;
             }
             let base = region.base() as usize;
-            let start = FrameNumber(base.div_ceil(FRAME_SIZE));
+            let start = FrameNumber::new(base.div_ceil(FRAME_SIZE));
             let end = (base + bytes) / FRAME_SIZE;
-            if let Some(len) = NonZeroUsize::new(end.saturating_sub(start.0)) {
+            if let Some(len) = NonZeroUsize::new(end.saturating_sub(start.index())) {
                 self.mark_free(start, len);
             };
         }
@@ -135,9 +129,9 @@ impl FrameBitmap {
     /// Marks every frame touched by the byte range `[addr, addr + len)` occupied.
     /// Rounds *outward* so a partially-used frame is never left free.
     fn reserve_bytes(&mut self, addr: usize, len: usize) {
-        let start = addr / FRAME_SIZE;
-        let end = (addr + len).div_ceil(FRAME_SIZE);
-        self.set_occupied(FrameNumber(start), end - start);
+        let start = PhysAddr::new(addr as u32).frame_floor();
+        let end = PhysAddr::new((addr + len) as u32).frame_ceil();
+        self.set_occupied(start, end.index() - start.index());
     }
 
     /// Marks `count` frames starting at `start` as free.
@@ -151,7 +145,7 @@ impl FrameBitmap {
     #[inline(always)]
     fn mark_free(&mut self, start: FrameNumber, count: NonZeroUsize) {
         self.set_free(start, count.get());
-        self.search_hint = self.search_hint.min(start.0 / WORD_BITS);
+        self.search_hint = self.search_hint.min(start.index() / WORD_BITS);
     }
 
     /// Allocates a single frame.
@@ -167,7 +161,7 @@ impl FrameBitmap {
         }
 
         let start = self.find_free_run(count.get())?;
-        self.set_occupied(FrameNumber(start), count.get());
+        self.set_occupied(FrameNumber::new(start), count.get());
         // Resume the next search past this run. Smaller gaps may survive
         // below `start`; the full-scan fallback still reaches them.
         self.search_hint = (start + count.get()) / WORD_BITS;
@@ -182,12 +176,12 @@ impl FrameBitmap {
     /// any bit is flipped, so a double free halts with the bitmap intact
     /// rather than half-updated.
     pub(super) fn free(&mut self, run: FrameRun) {
-        let (start, len) = (run.start.0, run.len.get());
+        let (start, len) = (run.start.index(), run.len.get());
 
         if self.any_free_in(start, len) {
             panic!("double free of physical frames");
         }
-        self.set_free(FrameNumber(start), len);
+        self.set_free(FrameNumber::new(start), len);
 
         // Pull the hint back so the next search sees the freed frames; never
         // raise it, so allocations stay packed toward low frames.
@@ -246,7 +240,7 @@ impl FrameBitmap {
     /// Sets the bits of `[start, start + len)`, marking the frames free.
     #[inline(always)]
     fn set_free(&mut self, start: FrameNumber, len: usize) {
-        for (word_i, mask) in word_masks(start.0, len) {
+        for (word_i, mask) in word_masks(start.index(), len) {
             self.bitmap[word_i] |= mask;
         }
     }
@@ -255,7 +249,7 @@ impl FrameBitmap {
     /// occupied.
     #[inline(always)]
     fn set_occupied(&mut self, start: FrameNumber, len: usize) {
-        for (word_i, mask) in word_masks(start.0, len) {
+        for (word_i, mask) in word_masks(start.index(), len) {
             self.bitmap[word_i] &= !mask;
         }
     }
