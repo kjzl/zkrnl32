@@ -13,9 +13,13 @@
 
 use core::num::NonZeroUsize;
 
+use crate::memory::layout::kernel_end_addr;
+use crate::memory::layout::kernel_start_addr;
+use crate::multiboot::MemoryMap;
 use crate::utils::bits::WORD_BITS;
 use crate::utils::bits::clipped_bit_range_mask;
 
+const FRAME_SIZE: usize = 4096;
 /// Number of 4 KiB frames in the 4 GiB i386 physical address space.
 const FRAME_COUNT: usize = 1 << 20;
 /// Number of words in the bitmap.
@@ -108,8 +112,32 @@ impl FrameBitmap {
     }
 
     /// Builds the initial picture of usable physical memory.
-    pub(super) fn init(&mut self) {
-        todo!()
+    pub(super) fn init(&mut self, mmap: MemoryMap<'_>) {
+        for region in mmap {
+            let bytes = region.addressable_bytes() as usize;
+            if !region.is_available() || bytes == 0 {
+                continue;
+            }
+            let base = region.base() as usize;
+            let start = FrameNumber(base.div_ceil(FRAME_SIZE));
+            let end = (base + bytes) / FRAME_SIZE;
+            if let Some(len) = NonZeroUsize::new(end.saturating_sub(start.0)) {
+                self.mark_free(start, len);
+            };
+        }
+
+        self.reserve_bytes(0, FRAME_SIZE); // GDT, etc. ...
+
+        let kstart = kernel_start_addr();
+        self.reserve_bytes(kstart, kernel_end_addr() - kstart);
+    }
+
+    /// Marks every frame touched by the byte range `[addr, addr + len)` occupied.
+    /// Rounds *outward* so a partially-used frame is never left free.
+    fn reserve_bytes(&mut self, addr: usize, len: usize) {
+        let start = addr / FRAME_SIZE;
+        let end = (addr + len).div_ceil(FRAME_SIZE);
+        self.set_occupied(FrameNumber(start), end - start);
     }
 
     /// Marks `count` frames starting at `start` as free.
@@ -122,7 +150,7 @@ impl FrameBitmap {
     /// Panics if the range reaches past the last frame.
     #[inline(always)]
     fn mark_free(&mut self, start: FrameNumber, count: NonZeroUsize) {
-        self.set_free(start.0, count.get());
+        self.set_free(start, count.get());
         self.search_hint = self.search_hint.min(start.0 / WORD_BITS);
     }
 
@@ -139,7 +167,7 @@ impl FrameBitmap {
         }
 
         let start = self.find_free_run(count.get())?;
-        self.set_occupied(start, count.get());
+        self.set_occupied(FrameNumber(start), count.get());
         // Resume the next search past this run. Smaller gaps may survive
         // below `start`; the full-scan fallback still reaches them.
         self.search_hint = (start + count.get()) / WORD_BITS;
@@ -159,7 +187,7 @@ impl FrameBitmap {
         if self.any_free_in(start, len) {
             panic!("double free of physical frames");
         }
-        self.set_free(start, len);
+        self.set_free(FrameNumber(start), len);
 
         // Pull the hint back so the next search sees the freed frames; never
         // raise it, so allocations stay packed toward low frames.
@@ -217,8 +245,8 @@ impl FrameBitmap {
 
     /// Sets the bits of `[start, start + len)`, marking the frames free.
     #[inline(always)]
-    fn set_free(&mut self, start: usize, len: usize) {
-        for (word_i, mask) in word_masks(start, len) {
+    fn set_free(&mut self, start: FrameNumber, len: usize) {
+        for (word_i, mask) in word_masks(start.0, len) {
             self.bitmap[word_i] |= mask;
         }
     }
@@ -226,8 +254,8 @@ impl FrameBitmap {
     /// Clears the bits of `[start, start + len)`, marking the frames
     /// occupied.
     #[inline(always)]
-    fn set_occupied(&mut self, start: usize, len: usize) {
-        for (word_i, mask) in word_masks(start, len) {
+    fn set_occupied(&mut self, start: FrameNumber, len: usize) {
+        for (word_i, mask) in word_masks(start.0, len) {
             self.bitmap[word_i] &= !mask;
         }
     }

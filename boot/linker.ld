@@ -23,6 +23,11 @@ SECTIONS
 	   in the image or the bootloader won't recognize the file format.
 	   Next we'll put the .text section. */
 	. = ALIGN(4K);
+
+	/* Bracket the loaded image with linker symbols so the kernel can find its
+	   own physical extent at runtime. */
+	kernel_start = .;
+
 	.text :
 	{
 		KEEP(*(.multiboot))
@@ -54,6 +59,10 @@ SECTIONS
 		*(.bss)
 		*(.bss.*)
 	}
+
+	/* End of the loaded image, rounded up to a whole 4 KiB frame. */
+	. = ALIGN(4K);
+	kernel_end = .;
 
 	/DISCARD/ :
 	{
