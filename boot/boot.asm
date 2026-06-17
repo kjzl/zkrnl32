@@ -19,96 +19,85 @@ align 4
 	dd MBFLAGS
 	dd CHECKSUM
 
-; The multiboot standard does not define the value of the stack pointer register
-; (esp) and it is up to the kernel to provide a stack. This allocates room for a
-; small stack by creating a symbol at the bottom of it, then allocating 16384
-; bytes for it, and finally creating a symbol at the top. The stack grows
-; downwards on x86. The stack is in its own section so it can be marked nobits,
-; which means the kernel file is smaller because it does not contain an
-; uninitialized stack. The stack on x86 must be 16-byte aligned according to the
-; System V ABI standard and de-facto extensions. The compiler will assume the
-; stack is properly aligned and failure to align the stack will result in
-; undefined behavior.
+; The directory is built in Rust (memory::paging) and placed in the
+; identity-linked .boot.data section, so its link address is also its physical
+; address - exactly what CR3 wants. The boot stub only needs its symbol.
+extern BOOT_PAGE_DIRECTORY
+
+; 16 KiB reserved in .bss, which the linker places in the high half. Unusable
+; until paging is on, so the boot code below sets ESP only after the jump. The
+; SysV i386 ABI wants 16-byte alignment, which the compiler relies on.
 section .bss
 align 16
-
 global stack_bottom
 global stack_top
-
 stack_bottom:
-resb 16384 ; 16 KiB is reserved for stack
+	resb 16384
 stack_top:
 
-; The linker script specifies _start as the entry point to the kernel and the
-; bootloader will jump to this position once the kernel has been loaded. It
-; doesn't make sense to return from this function as the bootloader is gone.
-; Declare _start as a function symbol with the given symbol size.
-section .text
+; This section is identity-linked (VMA == LMA, low), because it executes with
+; paging off, where only physical addresses are valid. GRUB enters at _start.
+section .boot.text progbits alloc exec nowrite align=16
 global _start:function (_start.end - _start)
 _start:
-	; The bootloader has loaded us into 32-bit protected mode on a x86
-	; machine. Interrupts are disabled. Paging is disabled. The processor
-	; state is as defined in the multiboot standard. The kernel has full
-	; control of the CPU. The kernel can only make use of hardware features
-	; and any code it provides as part of itself. There's no printf
-	; function, unless the kernel provides its own <stdio.h> header and a
-	; printf implementation. There are no security restrictions, no
-	; safeguards, no debugging mechanisms, only what the kernel provides
-	; itself. It has absolute and complete power over the
-	; machine.
+	; GRUB hands us EAX = multiboot magic, EBX = info pointer, with paging and
+	; interrupts off. EAX is about to be clobbered by the control-register dance,
+	; so stash magic in ESI; EBX is left untouched all the way to kernel_main.
+	mov esi, eax
 
-	; To set up a stack, we set the esp register to point to the top of our
-	; stack (as it grows downwards on x86 systems). This is necessarily done
-	; in assembly as languages such as C cannot function without a stack.
+	; Point CR3 at the bootstrap directory. It lives in identity-linked
+	; .boot.data, so the symbol's address already is its physical address.
+	mov eax, BOOT_PAGE_DIRECTORY
+	mov cr3, eax
+
+	; Enable 4 MiB pages (CR4.PSE). Without it the PAGE_SIZE bit in our PDEs is
+	; reserved and the entries would fault.
+	mov eax, cr4
+	or eax, 1 << 4
+	mov cr4, eax
+
+	; Turn paging on (CR0.PG). From the next instruction fetch on, every address
+	; is translated; we keep running only because PDE[0] identity-maps the low
+	; memory this code sits in. Writing CR0 is serializing, so the new mapping is
+	; in effect immediately.
+	mov eax, cr0
+	or eax, 1 << 31
+	mov cr0, eax
+
+	; Leave the low half. `higher_half` is linked at its high virtual address,
+	; now mapped by PDE[768], so an indirect jump lands us there. A near jump is
+	; enough: the GDT segments are flat, so CS already spans the high half.
+	mov ecx, higher_half
+	jmp ecx
+.end:
+
+; Linked and now executing in the high half. The low identity map is still in
+; place, so the GDT, VGA, and GRUB's low multiboot structures stay reachable.
+section .text
+higher_half:
+	; A usable stack at last.
 	mov esp, stack_top
 
-	; Secure GRUB's hand-off before anything else runs. GRUB left the Multiboot
-	; magic in eax and the info-struct pointer in ebx. eax is caller-saved, so
-	; the very next `call` is free to destroy it. Rather than depend on which
-	; registers install_gdt happens to preserve, push both values onto the stack
-	; now, where no called function can reach them. They double as kernel_main's
-	; C arguments (cdecl pushes right-to-left, so magic becomes arg1, info arg2).
-	; The leading `sub esp, 8` pads the 2-dword frame to 16 bytes so esp stays
-	; 16-byte aligned at *both* calls below, as the SysV i386 ABI requires.
-	sub esp, 8       ; alignment padding for the argument frame
+	; Rebuild kernel_main(magic, info)'s cdecl frame (pushed right-to-left) and
+	; keep ESP 16-byte aligned at both calls below. install_gdt takes no
+	; arguments and returns ESP unchanged, so the frame survives for kernel_main.
+	sub esp, 8       ; alignment padding for the 2-dword argument frame
 	push ebx         ; arg 2: multiboot info pointer
-	push eax         ; arg 1: multiboot magic
+	push esi         ; arg 1: multiboot magic
 
-	; Load the kernel-owned GDT and reload segment registers before entering
-	; Rust code that assumes our protected-mode segment layout is active.
-	; install_gdt is free to clobber any caller-saved register, but our hand-off
-	; is already safe on the stack — so we neither save registers around it nor
-	; clean up after it. It is stack-balanced (returns esp unchanged) and only
-	; touches its own frame and the GDT region, never our argument frame.
+	; Install the kernel's own GDT and reload segments before entering Rust that
+	; assumes our protected-mode layout.
 	extern install_gdt
 	call install_gdt
 
-	; This is a good place to initialize crucial processor state before the
-	; high-level kernel is entered. It's best to minimize the early
-	; environment where crucial features are offline. Note that the
-	; processor is not fully initialized yet: Features such as floating
-	; point instructions and instruction set extensions are not initialized
-	; yet. The GDT should be loaded here. Paging should be enabled here.
-	; C++ features such as global constructors and exceptions will require
-	; runtime support to work as well.
-
-	; Enter the high-level kernel. kernel_main(magic, info)'s argument frame is
-	; already on the stack from above, and esp is still 16-byte aligned, so we
-	; call straight through — nothing to rebuild or realign here.
+	; Enter the high-level kernel. The argument frame is already in place and ESP
+	; is still 16-byte aligned, so we call straight through.
 	extern kernel_main
 	call kernel_main
 
-	; If the system has nothing more to do, put the computer into an
-	; infinite loop. To do that:
-	; 1) Disable interrupts with cli (clear interrupt enable in eflags).
-	;    They are already disabled by the bootloader, so this is not needed.
-	;    Mind that you might later enable interrupts and return from
-	;    kernel_main (which is sort of nonsensical to do).
-	; 2) Wait for the next interrupt to arrive with hlt (halt instruction).
-	;    Since they are disabled, this will lock up the computer.
-	; 3) Jump to the hlt instruction if it ever wakes up due to a
-	;    non-maskable interrupt occurring or due to system management mode.
+	; kernel_main does not return; park the CPU if it ever does. Interrupts are
+	; already off, but be explicit.
 	cli
-.hang:	hlt
+.hang:
+	hlt
 	jmp .hang
-.end:

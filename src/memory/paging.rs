@@ -13,6 +13,7 @@
 
 use crate::memory::address::FrameNumber;
 use crate::memory::address::PhysAddr;
+use crate::memory::layout::KERNEL_VIRTUAL_BASE;
 
 /// Bytes a 4 KiB page (or frame) spans.
 const PAGE_SIZE: usize = 4096;
@@ -194,6 +195,37 @@ impl PageDirectoryEntry {
         PhysAddr::new(self.0 & ADDRESS_MASK).frame_floor()
     }
 }
+
+impl PageDirectory {
+    /// Builds the bootstrap directory the boot stub loads into `CR3` to bring
+    /// paging up, before any page tables exist.
+    ///
+    /// Two 4 MiB pages suffice because the whole kernel image fits in the first
+    /// 4 MiB of physical memory: entry 0 identity-maps `[0, 4 MiB)` so the low
+    /// boot code survives the `CR0.PG` flip, and the entry for the high half
+    /// ([`KERNEL_VIRTUAL_BASE`]) maps onto the same physical `[0, 4 MiB)`.
+    const fn bootstrap() -> Self {
+        let mut entries = [PageDirectoryEntry::EMPTY; ENTRY_COUNT];
+        entries[0] = PageDirectoryEntry::for_huge_page(PhysAddr::new(0), PageFlags::KERNEL_RW);
+        entries[KERNEL_VIRTUAL_BASE / PAGE_TABLE_SPAN] =
+            PageDirectoryEntry::for_huge_page(PhysAddr::new(0), PageFlags::KERNEL_RW);
+        Self(entries)
+    }
+}
+
+/// The bootstrap page directory the boot stub installs before turning paging
+/// on; see [`PageDirectory::bootstrap`].
+///
+/// It lives in the identity-linked `.boot.data` section, so its link address is
+/// also its physical address - exactly what `CR3` wants - and the boot stub
+/// loads it by the `BOOT_PAGE_DIRECTORY` symbol. `PageDirectory`'s 4 KiB `repr`
+/// alignment satisfies `CR3`'s alignment requirement. It is `mut` because the
+/// CPU sets the accessed and dirty bits in the live entries; no Rust code reads
+/// it, so no reference is ever taken.
+#[used]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".boot.data")]
+static mut BOOT_PAGE_DIRECTORY: PageDirectory = PageDirectory::bootstrap();
 
 impl core::fmt::Debug for PageFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

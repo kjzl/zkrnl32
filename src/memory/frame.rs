@@ -15,8 +15,8 @@ use core::num::NonZeroUsize;
 
 use crate::memory::address::FrameNumber;
 use crate::memory::address::PhysAddr;
-use crate::memory::layout::kernel_end_addr;
-use crate::memory::layout::kernel_start_addr;
+use crate::memory::layout::kernel_phys_end_addr;
+use crate::memory::layout::kernel_phys_start_addr;
 use crate::multiboot::MemoryMap;
 use crate::utils::bits::WORD_BITS;
 use crate::utils::bits::clipped_bit_range_mask;
@@ -122,8 +122,8 @@ impl FrameBitmap {
 
         self.reserve_bytes(0, FRAME_SIZE); // GDT, etc. ...
 
-        let kstart = kernel_start_addr();
-        self.reserve_bytes(kstart, kernel_end_addr() - kstart);
+        let kstart = kernel_phys_start_addr();
+        self.reserve_bytes(kstart, kernel_phys_end_addr() - kstart);
     }
 
     /// Marks every frame touched by the byte range `[addr, addr + len)` occupied.
