@@ -22,6 +22,9 @@ unsafe extern "C" {
     static kernel_phys_end: u8;
     /// Linker marker at the first virtual byte of the kernel's high half.
     static kernel_virt_start: u8;
+    /// Linker marker at the writable boundary: end of the read-only `.text` and
+    /// `.rodata`, start of the read-write `.data`/`.bss` tail. Page-aligned.
+    static kernel_data_start: u8;
     /// Linker marker one virtual byte past the kernel's high half, rounded up
     /// to a 4 KiB page.
     static kernel_virt_end: u8;
@@ -43,6 +46,12 @@ pub fn kernel_phys_end_addr() -> usize {
 /// Virtual address of the first byte of the kernel's high half.
 pub fn kernel_virt_start_addr() -> usize {
     (&raw const kernel_virt_start) as usize
+}
+
+/// Virtual address where the writable `.data`/`.bss` tail begins; everything
+/// below it (`.text` and `.rodata`) is mapped read-only.
+pub fn kernel_data_start_addr() -> usize {
+    (&raw const kernel_data_start) as usize
 }
 
 /// Virtual address one past the last byte of the kernel's high half, rounded up

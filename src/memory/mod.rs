@@ -18,8 +18,9 @@ pub mod paging;
 /// Brings the memory subsystem online from the Multiboot hand-off.
 ///
 /// Builds the physical frame allocator's picture of usable RAM from the BIOS
-/// memory map: every fully-available frame is freed, then the frames the kernel
-/// must keep are reserved.
+/// memory map - every fully-available frame is freed, then the frames the kernel
+/// must keep are reserved - and then replaces the bootstrap huge-page map with
+/// the real page directory, leaving paging fully under kernel control.
 ///
 /// # Panics
 ///
@@ -37,4 +38,5 @@ pub fn init(info: &MultibootInfo) {
     #[expect(static_mut_refs)]
     let allocator = unsafe { &mut frame::FRAME_ALLOCATOR };
     allocator.init(map);
+    paging::init(allocator);
 }

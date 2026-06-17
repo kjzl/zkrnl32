@@ -81,7 +81,7 @@ pub unsafe extern "C" fn kernel_main(magic: u32, info: *const MultibootInfo) -> 
     printk!("zkrnl32 booting\n");
     multiboot::print_memory_map(info);
     memory::init(info);
-    printk!("memory: frame allocator online\n");
+    printk!("memory: paging active, frame allocator online\n");
 
     loop {
         core::hint::spin_loop();

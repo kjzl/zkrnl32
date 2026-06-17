@@ -45,8 +45,16 @@ pub fn dump_stack_from(addr: usize, dword_count: usize) {
 }
 
 unsafe extern "C" {
+    static stack_guard: u8;
     static stack_bottom: u8;
     static stack_top: u8;
+}
+
+/// Address of the stack guard page: one page below `stack_bottom` that the real
+/// page directory leaves unmapped, so a stack overflow faults here instead of
+/// corrupting the `.bss` below the stack.
+pub fn stack_guard_addr() -> usize {
+    (&raw const stack_guard) as usize
 }
 
 pub fn stack_bottom_addr() -> usize {

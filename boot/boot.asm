@@ -24,15 +24,21 @@ align 4
 ; address - exactly what CR3 wants. The boot stub only needs its symbol.
 extern BOOT_PAGE_DIRECTORY
 
-; 16 KiB reserved in .bss, which the linker places in the high half. Unusable
+; 64 KiB reserved in .bss, which the linker places in the high half. Unusable
 ; until paging is on, so the boot code below sets ESP only after the jump. The
-; SysV i386 ABI wants 16-byte alignment, which the compiler relies on.
+; stack is page-aligned and preceded by a guard page that the real page
+; directory leaves unmapped: a stack overflow then faults on the guard instead
+; of silently corrupting the .bss below it. Page alignment also satisfies the
+; SysV i386 ABI's 16-byte requirement, which the compiler relies on.
 section .bss
-align 16
+align 4096
+global stack_guard
 global stack_bottom
 global stack_top
+stack_guard:
+	resb 4096
 stack_bottom:
-	resb 16384
+	resb 65536
 stack_top:
 
 ; This section is identity-linked (VMA == LMA, low), because it executes with

@@ -53,7 +53,11 @@ SECTIONS
 		*(.rodata.*)
 	}
 
-	/* Read-write data (initialized). */
+	/* Read-write data (initialized) through to the end of .bss. The paging code
+	   maps everything below this page-aligned boundary read-only (.text and
+	   .rodata) and everything at or above it read-write. */
+	. = ALIGN(4K);
+	kernel_data_start = .;
 	.data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VMA)
 	{
 		*(.data)

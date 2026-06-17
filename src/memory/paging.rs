@@ -13,7 +13,14 @@
 
 use crate::memory::address::FrameNumber;
 use crate::memory::address::PhysAddr;
+use crate::memory::address::VirtAddr;
+use crate::memory::frame::FrameBitmap;
 use crate::memory::layout::KERNEL_VIRTUAL_BASE;
+use crate::memory::layout::kernel_data_start_addr;
+use crate::memory::layout::kernel_phys_start_addr;
+use crate::memory::layout::kernel_virt_end_addr;
+use crate::memory::layout::kernel_virt_start_addr;
+use crate::stack::stack_guard_addr;
 
 /// Bytes a 4 KiB page (or frame) spans.
 const PAGE_SIZE: usize = 4096;
@@ -226,6 +233,142 @@ impl PageDirectory {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".boot.data")]
 static mut BOOT_PAGE_DIRECTORY: PageDirectory = PageDirectory::bootstrap();
+
+/// The directory's last slot points at the directory itself, so every page
+/// table is reachable through the top 4 MiB of virtual space once paging is on.
+const RECURSIVE_INDEX: usize = ENTRY_COUNT - 1;
+/// One past the highest physical address the bootstrap map identity-maps. Every
+/// frame backing the new directory must lie below it to be writable here.
+const BOOTSTRAP_IDENTITY_LIMIT: usize = PAGE_TABLE_SPAN;
+/// `CR0.WP`: makes ring 0 honour the read-only bit, so the kernel cannot scribble
+/// over its own `.text`/`.rodata`.
+const CR0_WP: u32 = 1 << 16;
+
+/// Builds the real 4 KiB-granular page directory and switches to it, retiring
+/// the bootstrap huge-page map.
+///
+/// The directory is assembled while the bootstrap map is still active, so every
+/// paging frame is reached through its low identity address and must lie in the
+/// low 4 MiB (asserted in [`bootstrap_frame_ptr`]). It maps the kernel high half
+/// with per-section rights, keeps the physical memory below the kernel identity-
+/// mapped for the GDT and VGA, and points its last slot at itself. The closing
+/// `CR3` load hands over atomically - the new directory already maps the running
+/// code, the stack, and VGA - and `CR0.WP` then enforces the read-only pages.
+pub(super) fn init(allocator: &mut FrameBitmap) {
+    let pd_frame = alloc_frame(allocator);
+    zero_frame(pd_frame);
+    // SAFETY: pd_frame is freshly allocated, identity-mapped, 4 KiB-aligned and
+    // referenced by nothing else, so this borrow over the zeroed frame is sound.
+    let pd = unsafe { &mut *bootstrap_frame_ptr::<PageDirectory>(pd_frame) };
+
+    pd.0[RECURSIVE_INDEX] = PageDirectoryEntry::for_table(pd_frame, PageFlags::KERNEL_RW);
+
+    let writable_start = kernel_data_start_addr();
+    let guard = stack_guard_addr();
+    for virt in (kernel_virt_start_addr()..kernel_virt_end_addr()).step_by(PAGE_SIZE) {
+        // Leave the stack guard page absent so a stack overflow faults here
+        // rather than corrupting the .bss below the stack.
+        if virt == guard {
+            continue;
+        }
+        let flags = if virt < writable_start {
+            PageFlags::KERNEL_RO
+        } else {
+            PageFlags::KERNEL_RW
+        };
+        let phys = PhysAddr::new((virt - KERNEL_VIRTUAL_BASE) as u32);
+        map_bootstrap(pd, allocator, VirtAddr::new(virt as u32), phys, flags);
+    }
+
+    // Physical memory below the kernel stays identity-mapped so the GDT (0x800)
+    // and the VGA buffer (0xB8000) survive the switch; capped below the kernel
+    // so it never aliases the image's read-only mapping.
+    for phys in (0..kernel_phys_start_addr()).step_by(PAGE_SIZE) {
+        let addr = VirtAddr::new(phys as u32);
+        map_bootstrap(
+            pd,
+            allocator,
+            addr,
+            PhysAddr::new(phys as u32),
+            PageFlags::KERNEL_RW,
+        );
+    }
+
+    // SAFETY: the new directory maps the running high-half code, the high-half
+    // stack, low VGA/GDT, and itself, so execution survives the CR3 load (which
+    // also flushes the TLB); setting CR0.WP then makes the read-only kernel
+    // pages stick.
+    unsafe {
+        core::arch::asm!(
+            "mov cr3, {pd:e}",
+            "mov {tmp:e}, cr0",
+            "or {tmp:e}, {wp}",
+            "mov cr0, {tmp:e}",
+            pd = in(reg) pd_frame.base_addr().raw(),
+            tmp = out(reg) _,
+            wp = const CR0_WP,
+            options(nostack),
+        );
+    }
+}
+
+/// Allocates one frame for paging structures, leaking the run: the directory
+/// and its tables are permanent.
+fn alloc_frame(allocator: &mut FrameBitmap) -> FrameNumber {
+    allocator
+        .allocate_one()
+        .expect("out of physical frames while building the page directory")
+        .start()
+}
+
+/// A writable pointer to a paging frame, addressed through the bootstrap
+/// identity map of the low 4 MiB. Valid only before the `CR3` switch.
+///
+/// # Panics
+///
+/// Panics if the frame lies above the bootstrap identity map, where it could
+/// not be initialised without first mapping it.
+fn bootstrap_frame_ptr<T>(frame: FrameNumber) -> *mut T {
+    let phys = frame.base_addr().raw() as usize;
+    assert!(
+        phys < BOOTSTRAP_IDENTITY_LIMIT,
+        "paging frame at {phys:#x} lies above the bootstrap identity map"
+    );
+    phys as *mut T
+}
+
+/// Zeroes a freshly allocated paging frame in place, leaving every entry
+/// absent. A byte fill avoids materialising a 4 KiB table value on the stack,
+/// which the boot stack cannot spare.
+fn zero_frame(frame: FrameNumber) {
+    let ptr = bootstrap_frame_ptr::<u8>(frame);
+    // SAFETY: identity-mapped, frame-aligned, unaliased; fills exactly the frame.
+    unsafe { ptr.write_bytes(0, PAGE_SIZE) };
+}
+
+/// Maps `virt` to `phys` with `flags` in the directory under construction,
+/// allocating the page table for its directory slot on first use.
+fn map_bootstrap(
+    pd: &mut PageDirectory,
+    allocator: &mut FrameBitmap,
+    virt: VirtAddr,
+    phys: PhysAddr,
+    flags: PageFlags,
+) {
+    let index = virt.pd_index();
+    let table_frame = if pd.0[index].is_present() {
+        pd.0[index].table_frame()
+    } else {
+        let frame = alloc_frame(allocator);
+        zero_frame(frame);
+        pd.0[index] = PageDirectoryEntry::for_table(frame, PageFlags::KERNEL_RW);
+        frame
+    };
+    let table = bootstrap_frame_ptr::<PageTable>(table_frame);
+    // SAFETY: identity-mapped and aligned; this page table is reached only here,
+    // not through the `&mut pd` borrow, so the write does not alias.
+    unsafe { (*table).0[virt.pt_index()] = PageTableEntry::new(phys.frame_floor(), flags) };
+}
 
 impl core::fmt::Debug for PageFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
