@@ -13,9 +13,18 @@ RUST_LLD = $(RUST_SYSROOT)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
 QEMU := qemu-system-i386
 QEMU_FLAGS := -cdrom $(ISO)
 QEMU_HEADLESS_FLAGS := -cdrom $(ISO) -display none
+# Halt-and-log instead of silently rebooting on a fault: until an IDT exists,
+# an unhandled fault triple-faults the CPU, and -no-reboot leaves a register
+# dump in the log rather than resetting. -d logs exceptions, CPU resets (with
+# registers), and invalid-state errors to build/qemu.log.
+QEMU_DEBUG_FLAGS := -cdrom $(ISO) -no-reboot -no-shutdown -d int,cpu_reset,guest_errors -D $(BUILD_DIR)/qemu.log
+# As above, plus a GDB stub on localhost:1234 (-s), frozen at power-on (-S) so a
+# debugger can attach before the first instruction. Connect with
+# `target remote :1234`.
+QEMU_GDB_FLAGS := $(QEMU_DEBUG_FLAGS) -s -S
 GRUB_BIOS_DIR := /usr/lib/grub/i386-pc
 
-.PHONY: all build iso run run-headless check check-rust-toolchain check-iso-tools check-run-tools print-rust-toolchain clean
+.PHONY: all build iso run run-headless run-debug run-gdb check check-rust-toolchain check-iso-tools check-run-tools print-rust-toolchain clean
 
 # Default target
 all: build
@@ -39,6 +48,14 @@ run: $(ISO) | check-run-tools
 # Boots the ISO in QEMU without opening a display window.
 run-headless: $(ISO) | check-run-tools
 	$(QEMU) $(QEMU_HEADLESS_FLAGS)
+
+# Boots with fault logging to build/qemu.log and no reboot on fault.
+run-debug: $(ISO) | check-run-tools
+	$(QEMU) $(QEMU_DEBUG_FLAGS)
+
+# Like run-debug, but freezes at power-on and exposes a GDB stub on :1234.
+run-gdb: $(ISO) | check-run-tools
+	$(QEMU) $(QEMU_GDB_FLAGS)
 
 $(BUILD_DIR)/.dir:
 	mkdir -p $(BUILD_DIR)
